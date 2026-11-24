@@ -2,6 +2,7 @@ package com.hotel.zayavki
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -28,6 +29,13 @@ class MainActivity : Activity() {
             stopService(Intent(this@MainActivity, WatchService::class.java))
         }
         @JavascriptInterface fun hasLogin(): Boolean = Prefs.login(this@MainActivity) != null
+                @JavascriptInterface fun openWatchSettings() {
+            runOnUiThread {
+                startActivity(Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                    .putExtra(Settings.EXTRA_CHANNEL_ID, "watch_min"))
+            }
+        }
         @JavascriptInterface fun getShowWatch(): Boolean = Prefs.bool(this@MainActivity, "show_watch", true)
         @JavascriptInterface fun setShowWatch(v: Boolean) {
             Prefs.putBool(this@MainActivity, "show_watch", v)
@@ -63,13 +71,18 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1); return
         }
-        val pm = getSystemService(PowerManager::class.java)
+                val pm = getSystemService(PowerManager::class.java)
         if (!Prefs.asked(this, "bat") && !pm.isIgnoringBatteryOptimizations(packageName)) {
             Prefs.setAsked(this, "bat")
-            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+            AlertDialog.Builder(this)
+                .setTitle("Работа в фоне")
+                .setMessage("Чтобы уведомления и будильник приходили при выключенном экране, приложению нужно разрешить работать без ограничений по батарее.\n\nНа следующем экране выберите «Разрешить» (или «Без ограничений» в настройках батареи).")
+                .setPositiveButton("Открыть настройки") { _, _ ->
+                    startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                }
+                .setNegativeButton("Позже", null)
+                .show()
         }
-    }
-
     override fun onRequestPermissionsResult(code: Int, p: Array<out String>, r: IntArray) {
         super.onRequestPermissionsResult(code, p, r); askPermissions()
     }
