@@ -17,6 +17,8 @@ object Prefs {
     fun putStr(c: Context, k: String, v: String) = p(c).edit().putString(k, v).apply()
     fun long(c: Context, k: String): Long = p(c).getLong(k, 0L)
     fun putLong(c: Context, k: String, v: Long) = p(c).edit().putLong(k, v).apply()
+    fun bool(c: Context, k: String, def: Boolean) = p(c).getBoolean(k, def)
+    fun putBool(c: Context, k: String, v: Boolean) = p(c).edit().putBoolean(k, v).apply()
     fun asked(c: Context, k: String) = p(c).getBoolean(k, false)
     fun setAsked(c: Context, k: String) = p(c).edit().putBoolean(k, true).apply()
 }
