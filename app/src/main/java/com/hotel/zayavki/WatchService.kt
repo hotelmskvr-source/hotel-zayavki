@@ -26,6 +26,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 const val ACTION_STOP_ALARM = "com.hotel.zayavki.STOP_ALARM"
+const val ACTION_REFRESH = "com.hotel.zayavki.REFRESH"
 private const val ALARM_NOTIF = 9001
 
 // Раз в 30 секунд спрашивает у Supabase список заявок и сравнивает с прошлым разом.
@@ -45,19 +46,19 @@ class WatchService : Service() {
         super.onCreate()
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("watch", "Слежение за заявками", NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(NotificationChannel("watch_min", "Слежение (скрытое)", NotificationManager.IMPORTANCE_MIN))
         nm.createNotificationChannel(NotificationChannel("tickets", "Заявки", NotificationManager.IMPORTANCE_HIGH))
         nm.createNotificationChannel(NotificationChannel("alarm", "Будильник", NotificationManager.IMPORTANCE_HIGH).apply {
             setSound(null, null); enableVibration(false)
         })
-        val n = NotificationCompat.Builder(this, "watch").setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("Заявки").setContentText("Слежение за заявками включено")
-            .setContentIntent(openApp()).setOngoing(true).build()
+        val n = watchNotif()
         if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) else startForeground(1, n)
         ex.scheduleWithFixedDelay({ try { poll() } catch (e: Exception) { } }, 1, 30, TimeUnit.SECONDS)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP_ALARM) stopAlarm()
+        if (intent?.action == ACTION_REFRESH) getSystemService(NotificationManager::class.java).notify(1, watchNotif())
         return START_STICKY
     }
 
@@ -67,6 +68,15 @@ class WatchService : Service() {
         this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
     )
+
+    // Плашка слежения: обычная или скрытая (без значка в строке состояния), по переключателю в «Ещё»
+    private fun watchNotif(): android.app.Notification {
+        val show = Prefs.bool(this, "show_watch", true)
+        return NotificationCompat.Builder(this, if (show) "watch" else "watch_min").setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("Заявки").setContentText("Слежение за заявками включено")
+            .setPriority(if (show) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_MIN)
+            .setContentIntent(openApp()).setOngoing(true).build()
+    }
 
     // ---------- сеть ----------
     private fun http(method: String, url: String, headers: Map<String, String>, body: String? = null): Pair<Int, String> {
