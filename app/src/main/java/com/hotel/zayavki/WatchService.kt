@@ -58,7 +58,10 @@ class WatchService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP_ALARM) stopAlarm()
-        if (intent?.action == ACTION_REFRESH) getSystemService(NotificationManager::class.java).notify(1, watchNotif())
+                if (intent?.action == ACTION_REFRESH) {
+            val n = watchNotif()
+            if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) else startForeground(1, n)
+        }
         return START_STICKY
     }
 
