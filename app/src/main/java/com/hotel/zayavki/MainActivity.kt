@@ -28,6 +28,13 @@ class MainActivity : Activity() {
             stopService(Intent(this@MainActivity, WatchService::class.java))
         }
         @JavascriptInterface fun hasLogin(): Boolean = Prefs.login(this@MainActivity) != null
+        @JavascriptInterface fun getShowWatch(): Boolean = Prefs.bool(this@MainActivity, "show_watch", true)
+        @JavascriptInterface fun setShowWatch(v: Boolean) {
+            Prefs.putBool(this@MainActivity, "show_watch", v)
+            if (Prefs.login(this@MainActivity) != null) runOnUiThread {
+                startService(Intent(this@MainActivity, WatchService::class.java).setAction(ACTION_REFRESH))
+            }
+        }
     }
 
     private fun startWatch() = ContextCompat.startForegroundService(this, Intent(this, WatchService::class.java))
