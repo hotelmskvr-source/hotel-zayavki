@@ -71,4 +71,24 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1); return
         }
-        val pm
+        val pm = getSystemService(PowerManager::class.java)
+        if (!Prefs.asked(this, "bat") && !pm.isIgnoringBatteryOptimizations(packageName)) {
+            Prefs.setAsked(this, "bat")
+            AlertDialog.Builder(this)
+                .setTitle("Работа в фоне")
+                .setMessage("Чтобы уведомления и будильник приходили при выключенном экране, приложению нужно разрешить работать без ограничений по батарее.\n\nНа следующем экране выберите «Разрешить» (или «Без ограничений» в настройках батареи).")
+                .setPositiveButton("Открыть настройки") { _, _ ->
+                    startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                }
+                .setNegativeButton("Позже", null)
+                .show()
+        }
+    }
+
+    override fun onRequestPermissionsResult(code: Int, p: Array<out String>, r: IntArray) {
+        super.onRequestPermissionsResult(code, p, r); askPermissions()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() { if (web.canGoBack()) web.goBack() else super.onBackPressed() }
+}
