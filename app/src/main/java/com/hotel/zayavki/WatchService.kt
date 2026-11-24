@@ -117,11 +117,15 @@ class WatchService : Service() {
     private fun poll() {
         val l = Prefs.login(this) ?: run { stopSelf(); return }
         val since = Instant.now().minusSeconds(7 * 86400).toString()
-        val raw = get(l, "tickets?select=id,status,category,subtopic,location,urgent,created_at,assignee_id,author:profiles!tickets_author_id_fkey(full_name)" +
+        val raw = get(l, "tickets?select=id,status,dept,category,subtopic,location,urgent,created_at,assignee_id,author:profiles!tickets_author_id_fkey(full_name)" +
             "&or=(status.in.(new,in_progress),created_at.gte.$since)&order=created_at.desc&limit=200") ?: return
         val prof = get(l, "profiles?id=eq.$uid&select=role,notify_new,notify_taken,notify_done,alarm_on,alarm_minutes")
             ?.let { JSONArray(it).optJSONObject(0) } ?: return
-        val isAdmin = prof.optString("role") == "admin"
+        val role = prof.optString("role")
+        val isStaff = role == "admin" || role == "engineer"
+        val myDept = if (role == "admin") "it" else "eng"
+        // будильник звонит только в смену: если сегодня смены нет (или сейчас вне её часов), молчим
+        val onShift = isStaff && prof.optBoolean("alarm_on", true) && isOnShift(l)
         val oldRaw = Prefs.str(this, "snap")
         val first = oldRaw == null            // первый запуск: только запоминаем, чтобы не засыпать уведомлениями
         val old = JSONObject(oldRaw ?: "{}")
@@ -137,7 +141,8 @@ class WatchService : Service() {
             val created = OffsetDateTime.parse(t.getString("created_at")).toInstant().toEpochMilli()
             val prev = if (old.has(id.toString())) old.getString(id.toString()) else null
             val mine = t.optString("assignee_id") == uid
-            if (isAdmin && !first) {
+            val ofMyDept = isStaff && t.optString("dept", "it") == myDept
+            if (ofMyDept && !first) {
                 if (prev == null && st == "new") {
                     if (now - created < 6 * 3600_000L && prof.optBoolean("notify_new", true))
                         notifyUser(id, if (t.optBoolean("urgent")) "🔴 СРОЧНО: новая заявка" else "Новая заявка", "$text. $author")
@@ -151,7 +156,7 @@ class WatchService : Service() {
             }
             if (st == "new") {
                 newIds.add(id)
-                if (isAdmin && prof.optBoolean("alarm_on", true)) {
+                if (ofMyDept && onShift) {
                     val ageMin = (now - created) / 60000
                     val last = Prefs.long(this, "alarm_$id")
                     // срабатывает через alarm_minutes после создания и повторяется каждые 10 минут, пока заявку не взяли
@@ -165,6 +170,24 @@ class WatchService : Service() {
         ringing.retainAll(newIds)
         if (ringing.isEmpty()) stopAlarm()
         Prefs.putStr(this, "snap", snap.toString())
+    }
+
+    // Есть ли у меня сегодня смена и попадает ли в неё текущее время (если часы указаны)
+    private fun isOnShift(l: Login): Boolean {
+        val today = java.time.LocalDate.now().toString()
+        val raw = get(l, "shifts?user_id=eq.$uid&day=eq.$today&select=start_time,end_time") ?: return false
+        val arr = JSONArray(raw)
+        if (arr.length() == 0) return false
+        val s = arr.getJSONObject(0)
+        fun parse(k: String): java.time.LocalTime? {
+            val v = s.optString(k, "")
+            return if (v.isEmpty() || v == "null") null else java.time.LocalTime.parse(v)
+        }
+        val a = parse("start_time"); val b = parse("end_time"); val now = java.time.LocalTime.now()
+        if (a != null && b != null && b.isBefore(a)) return !now.isBefore(a) // ночная смена: с вечера до полуночи
+        if (a != null && now.isBefore(a)) return false
+        if (b != null && now.isAfter(b)) return false
+        return true
     }
 
     private fun notifyUser(id: Int, title: String, body: String) {
