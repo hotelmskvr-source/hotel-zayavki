@@ -93,52 +93,62 @@ class WatchService : Service() {
         return code to text
     }
 
+    // ---------- запросы к серверу (Yandex Cloud Functions) ----------
+    private fun api(l: Login, action: String, payload: JSONObject = JSONObject()): Pair<Int, String> {
+        val headers = mutableMapOf("Content-Type" to "application/json")
+        // токен идёт в X-Auth-Token: заголовок Authorization перехватывает шлюз Yandex Cloud и отвечает 403
+        if (token.isNotEmpty() && action != "auth.login") headers["X-Auth-Token"] = token
+        return http("POST", l.url, headers, payload.put("action", action).toString())
+    }
+
     private fun signIn(l: Login): Boolean {
-        val (code, t) = http("POST", "${l.url}/auth/v1/token?grant_type=password",
-            mapOf("apikey" to l.key, "Content-Type" to "application/json"),
-            JSONObject().put("email", if (l.email.contains("@")) l.email else l.email).put("password", l.pw).toString())
+        val (code, t) = api(l, "auth.login", JSONObject().put("login", l.email).put("password", l.pw))
         if (code != 200) return false
-        val j = JSONObject(t)
-        token = j.getString("access_token"); uid = j.getJSONObject("user").getString("id")
+        token = JSONObject(t).getString("token")
         return true
     }
 
-    private fun get(l: Login, path: String): String? {
+    // одна «начальная загрузка»: профиль с настройками, заявки и смены на сегодня
+    private fun bootstrap(l: Login): JSONObject? {
+        val day = java.time.LocalDate.now().toString()
         if (token.isEmpty() && !signIn(l)) return null
-        var r = http("GET", "${l.url}/rest/v1/$path", mapOf("apikey" to l.key, "Authorization" to "Bearer $token"))
+        var r = api(l, "bootstrap", JSONObject().put("day", day))
         if (r.first == 401) {
             if (!signIn(l)) return null
-            r = http("GET", "${l.url}/rest/v1/$path", mapOf("apikey" to l.key, "Authorization" to "Bearer $token"))
+            r = api(l, "bootstrap", JSONObject().put("day", day))
         }
-        return if (r.first == 200) r.second else null
+        return if (r.first == 200) JSONObject(r.second) else null
     }
 
     // ---------- проверка заявок ----------
     private fun poll() {
         val l = Prefs.login(this) ?: run { stopSelf(); return }
-        val since = Instant.now().minusSeconds(7 * 86400).toString()
-        val raw = get(l, "tickets?select=id,status,dept,category,subtopic,location,urgent,created_at,assignee_id,author:profiles!tickets_author_id_fkey(full_name)" +
-            "&or=(status.in.(new,in_progress),created_at.gte.$since)&order=created_at.desc&limit=200") ?: return
-        val prof = get(l, "profiles?id=eq.$uid&select=role,notify_new,notify_taken,notify_done,alarm_on,alarm_minutes")
-            ?.let { JSONArray(it).optJSONObject(0) } ?: return
+        // сохранённый вход от старой версии (Supabase): забываем его, нужно один раз войти заново
+        if (l.url.contains("supabase")) { Prefs.clearLogin(this); stopSelf(); return }
+        val data = bootstrap(l) ?: return
+        val prof = data.getJSONObject("me")
+        val uid = prof.getString("id")
+        val arr = data.getJSONArray("tickets")
         val role = prof.optString("role")
         val isStaff = role == "admin" || role == "engineer"
         val myDept = if (role == "admin") "it" else "eng"
         // будильник звонит только в смену: если сегодня смены нет (или сейчас вне её часов), молчим
-        val onShift = isStaff && prof.optBoolean("alarm_on", true) && isOnShift(l)
+        val onShift = isStaff && prof.optBoolean("alarm_on", true) && isOnShift(data.optJSONArray("duty_shifts"), uid)
         val oldRaw = Prefs.str(this, "snap")
         val first = oldRaw == null            // первый запуск: только запоминаем, чтобы не засыпать уведомлениями
         val old = JSONObject(oldRaw ?: "{}")
-        val arr = JSONArray(raw); val snap = JSONObject(); val newIds = mutableSetOf<Int>()
+        val snap = JSONObject(); val newIds = mutableSetOf<Int>()
         val now = System.currentTimeMillis()
 
         for (i in 0 until arr.length()) {
             val t = arr.getJSONObject(i)
-            val id = t.getInt("id"); val st = t.getString("status"); snap.put(id.toString(), st)
+            val id = t.getInt("id"); val st = t.getString("status")
+            val created = OffsetDateTime.parse(t.getString("created_at")).toInstant().toEpochMilli()
+            if (st != "new" && st != "in_progress" && now - created > 7 * 86400_000L) continue  // старые закрытые не нужны
+            snap.put(id.toString(), st)
             val sub = t.optString("subtopic").let { if (it.isNotEmpty() && it != "null") " · $it" else "" }
             val text = t.getString("category") + sub + ", " + t.optString("location")
             val author = t.optJSONObject("author")?.optString("full_name") ?: ""
-            val created = OffsetDateTime.parse(t.getString("created_at")).toInstant().toEpochMilli()
             val prev = if (old.has(id.toString())) old.getString(id.toString()) else null
             val mine = t.optString("assignee_id") == uid
             val ofMyDept = isStaff && t.optString("dept", "it") == myDept
@@ -173,12 +183,9 @@ class WatchService : Service() {
     }
 
     // Есть ли у меня сегодня смена и попадает ли в неё текущее время (если часы указаны)
-    private fun isOnShift(l: Login): Boolean {
-        val today = java.time.LocalDate.now().toString()
-        val raw = get(l, "shifts?user_id=eq.$uid&day=eq.$today&select=start_time,end_time") ?: return false
-        val arr = JSONArray(raw)
-        if (arr.length() == 0) return false
-        val s = arr.getJSONObject(0)
+    private fun isOnShift(shifts: JSONArray?, uid: String): Boolean {
+        if (shifts == null) return false
+        val s = (0 until shifts.length()).map { shifts.getJSONObject(it) }.firstOrNull { it.optString("user_id") == uid } ?: return false
         fun parse(k: String): java.time.LocalTime? {
             val v = s.optString(k, "")
             return if (v.isEmpty() || v == "null") null else java.time.LocalTime.parse(v)
